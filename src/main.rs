@@ -9,6 +9,10 @@ mod min_term {
     use std::iter::zip;
     use std::ops::Not;
 
+    // O mintermo é aqui descrito como um vetor de bytes. Lembrando que cada byte corresponde a uma
+    // variável. Os implicantes também são representados por essa estrutura.
+    // Em vez de u8, poderia ser utilizado um enum, já que os valores possível são apenas 1, 0 e
+    // '-'. Foi escolhida a primeira abordagem por simplicidade.
     #[derive(Debug, Clone)]
     pub struct MinTerm {
         bits: Vec<u8>,
@@ -16,10 +20,15 @@ mod min_term {
 
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub enum CoverageMark {
-        EssentialPrimeImplicant, // Minterm covered by the prime implicant (essential)
-        NotCovered,              // Minterm not covered by the prime implicant
-        NonEssentialPrimeImplicant, // Minterm covered by prime implicant, but is not essential
-        EssentialCover, // Minterm covered by prime implicant, but covered by an essential too
+        EssentialPrimeImplicant, // Marca que o mintermo é coberto por um implicante primo essencial
+        NotCovered,              // Marca que o mintermo não é coberto por determinado implicante
+        NonEssentialPrimeImplicant, // Marca que o mintermo é coberto por um implicante primo não essencial
+        EssentialCover, // Marca que o mintermo é coberto por implicante primo não essencial e
+                        // também por um implicante primo essencial. Essa variante será utilizada
+                        // para simplificar no algoritmo de Petrick, visto que se um implicante
+                        // primo cobre apenas mintermos já cobertos por implicantes primos, que
+                        // obrigatoriamente já aparecem na solução final, não tem porque
+                        // adicioná-lo.
     }
 
     impl MinTerm {
@@ -98,6 +107,7 @@ mod min_term {
 
     impl Eq for MinTerm {}
 
+    // Combina dois mintermos (ou implicantes)
     fn merge_minterms(first: &MinTerm, second: &MinTerm) -> MinTerm {
         zip(first, second)
             .map(|(x, y)| if x != y { b'-' } else { *x })
@@ -105,12 +115,15 @@ mod min_term {
             .into()
     }
 
+    // Verifica se os hífens dos mintermos estão alinhados. Essa condição é necessária para a
+    // combinação dos mintermos.
     fn check_dashes_align(first: &MinTerm, second: &MinTerm) -> bool {
         zip(first, second)
             .any(|(&x, &y)| (x == b'-') ^ (y == b'-'))
             .not()
     }
 
+    // Verifica se os mintermos diferem em apenas 1 bit
     fn check_min_term_difference(first: &MinTerm, second: &MinTerm) -> bool {
         zip(first, second).filter(|(x, y)| x != y).count() == 1
     }
@@ -122,31 +135,39 @@ mod min_term {
         zip(prime_implicant, minterms).all(|(&x, &y)| x == b'-' || y == b'-' || x == y)
     }
 
+    // Verifica a marcação mais apropriada
     fn mark_coverage(first: &mut [CoverageMark], second: &mut [CoverageMark]) {
         use CoverageMark::*;
         for idx in 0..first.len() {
             match (first[idx], second[idx]) {
+                // Se dois implicantes primos essencias cobrem o mesmo mintermo, na verdade nenhum
+                // deles é essencial
                 (EssentialPrimeImplicant, EssentialPrimeImplicant) => {
                     first[idx] = NonEssentialPrimeImplicant;
                     second[idx] = NonEssentialPrimeImplicant;
                 }
+                // Se um implicante primos essencial cobre o mesmo mintermo que um não essencial,
+                // ele também é não essencial
                 (NonEssentialPrimeImplicant, EssentialPrimeImplicant) => {
                     second[idx] = NonEssentialPrimeImplicant;
                 }
                 (EssentialPrimeImplicant, NonEssentialPrimeImplicant) => {
                     first[idx] = NonEssentialPrimeImplicant;
                 }
+                // Qualquer outra combinação não sofre alteração
                 _ => (),
             }
         }
     }
 
+    // Verifica se o implicante primo não essencial cobre mintermos que já são cobertos por um
+    // implicante primo esssencial
     fn mark_redundancy(essential: &[CoverageMark], non_essential: &mut [CoverageMark]) {
         use CoverageMark::*;
         for idx in 0..essential.len() {
             match (essential[idx], non_essential[idx]) {
                 (EssentialPrimeImplicant, NonEssentialPrimeImplicant)
-                | (NonEssentialPrimeImplicant, NonEssentialPrimeImplicant) => {
+                | (NonEssentialPrimeImplicant, EssentialPrimeImplicant) => {
                     non_essential[idx] = EssentialCover;
                 }
                 _ => (),
@@ -158,7 +179,17 @@ mod min_term {
         prime_implicant.contains(&CoverageMark::EssentialPrimeImplicant)
     }
 
+    // Encontra os implicantes primos a partir do conjunto de mintermos
+    // A estrutura de dados utilizada para manipular os mintermos foi o BTreeSet
+    // Utilizando um set, garante-se que cada mintermo aparece apenas uma única vez, mas não
+    // varifica caso o mesmo mintermo seja adicionado mais de uma vez com resultados diferentes.
+    // O BTreeSet garante a ordenação dos mintermos. Durante o desenvolvimento, percebeu-se que
+    // isso é necessário. Mas poderia ser tentada um implementação utilizando HashSet para diminuir
+    // o processamento com a ordenação.
     pub fn get_prime_implicants(minterms: &BTreeSet<MinTerm>) -> BTreeSet<MinTerm> {
+        // Inicialmente o conjunto de mintermos é clonado. Esse conjunto irá guardar os termos que
+        // não foram combinados. Se eles não foram combinados nessa iteração, ou já são implicantes
+        // primos ou serão combinados na próxima iteração.
         let mut not_merged: BTreeSet<MinTerm> = BTreeSet::from_iter(minterms.iter().cloned());
         let mut prime_implicants = minterms
             .iter()
@@ -175,6 +206,7 @@ mod min_term {
 
         prime_implicants.extend(not_merged);
 
+        // O algoritmo é recursivo, visto que implicantes ainda podem ser combinados.
         if number_of_merges == 0 {
             prime_implicants
         } else {
@@ -190,6 +222,8 @@ mod min_term {
 
         for prime_implicant in prime_implicants {
             for minterm in minterms {
+                // Todos as marcações são feitas supondo que aquele implicante primo é essencial. A
+                // classificação será feita posteriormente.
                 let chart_tick =
                     match check_match_prime_implicant_and_minterm(prime_implicant, minterm) {
                         true => CoverageMark::EssentialPrimeImplicant,
@@ -205,6 +239,7 @@ mod min_term {
         prime_implicant_chart
     }
 
+    // Classifica os implicantes primos em essenciais e não essenciais.
     pub fn classify_prime_implicants(
         prime_implicant_chart: &mut BTreeMap<MinTerm, Vec<CoverageMark>>,
     ) -> (Vec<MinTerm>, Vec<MinTerm>) {
@@ -236,6 +271,8 @@ mod min_term {
             })
     }
 
+    // Elimina todos os implicantes primos não essenciais redundantes, ou seja, que só cobrem
+    // mintermos já cobertos por implicantes primos essenciais
     pub fn eliminate_redundant_non_essential_prime_implicant(
         prime_implicant_chart: &mut BTreeMap<MinTerm, Vec<CoverageMark>>,
         essential_prime_implicants: &[MinTerm],
@@ -290,13 +327,22 @@ mod petrick_method {
 
     use crate::min_term::MinTerm;
     use std::collections::BTreeSet;
+
+    // Os implicantes primos que estão sendo multiplicados são guardados num BTreeSet. Por exemplo,
+    // A.B.C seria armazenado como BTreeSet(A, B, C). Foi escolhido o BTreeSet para garantir
+    // unicidade e ordem
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     struct Product<'a>(BTreeSet<&'a MinTerm>);
 
+    // Os implicantes primos que estão sendo somados são guardados num BTreeSet de produtos. Por
+    // exemplo A.B.C + D.E seria armazenado como BTreeSet(Produtos(A, B, C), Produtos(D,E)). Foi
+    // escolhido o BTreeSet para garantir unicidade e ordem.
     #[derive(Debug)]
     struct Sum<'a>(BTreeSet<Product<'a>>);
 
     pub fn petrick_method(non_essential_prime_implicants: &[MinTerm]) -> Vec<MinTerm> {
+        // Se o número de implicantes primos não essencias é menor que 2, o algoritmo de Petrick
+        // não é necessário.
         if non_essential_prime_implicants.len() < 2 {
             return non_essential_prime_implicants.into();
         }
@@ -305,12 +351,17 @@ mod petrick_method {
             .iter()
             .combinations(2)
             .map(|combination| {
-                let minterm1 = Product(BTreeSet::from([combination[0]]));
-                let minterm2 = Product(BTreeSet::from([combination[1]]));
+                // Sendo K, M e N implicantes primos, o algoritmo de Petrick resulta em (K+M).(K+N).(M+N)
+                let minterm1 = Product(BTreeSet::from([combination[0]])); // Exemplo: |K| - |K| - |M|
+                let minterm2 = Product(BTreeSet::from([combination[1]])); // Exemplo: |M| - |N| - |N|
 
                 Sum(BTreeSet::from([minterm1, minterm2]))
             })
             .reduce(|acc, x| {
+                // O processamento será a multiplicação de um termo de cada vez e da esquerda para
+                // a direita, ou seja:
+                // (K+M).(K+N).(M+N) => (K+KN+KM+MN).(M+N) => KM+KN+KMN+MN
+                // O.B.S: AA = A e A + A = A (BTreeSet não vai aceitar duplicatas)
                 Sum(acc
                     .0
                     .iter()
@@ -325,6 +376,8 @@ mod petrick_method {
             .0
             .iter()
             .max_by(|x, y| {
+                // É selecionado o termo com o mair número de hífens, ou seja, com menor número de
+                // variáveis
                 let x_dashes_count = x.0.iter().map(|a| a.count_dashes()).sum::<usize>();
                 let y_dashes_count = y.0.iter().map(|a| a.count_dashes()).sum::<usize>();
 
